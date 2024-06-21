@@ -6,6 +6,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
+using OpenAI.Custom.Common.Instrumentation;
+
 namespace OpenAI.Chat;
 
 [CodeGenClient("Chat")]
@@ -14,6 +16,7 @@ namespace OpenAI.Chat;
 public partial class ChatClient
 {
     private readonly string _model;
+    private readonly InstrumentationFactory _instrumentation;
 
     /// <summary>
     /// Initializes a new instance of <see cref="ChatClient"/> that will use an API key when authenticating.
@@ -62,6 +65,7 @@ public partial class ChatClient
         _model = model;
         _pipeline = pipeline;
         _endpoint = endpoint;
+        _instrumentation = new InstrumentationFactory(model, endpoint);
     }
 
     /// <summary>
@@ -77,11 +81,22 @@ public partial class ChatClient
 
         options ??= new();
         CreateChatCompletionOptions(messages, ref options);
+        using InstrumentationScope scope = _instrumentation.StartChatCompletionScope(options);
 
         using BinaryContent content = options.ToBinaryContent();
 
-        ClientResult result = await CompleteChatAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
-        return ClientResult.FromValue(ChatCompletion.FromResponse(result.GetRawResponse()), result.GetRawResponse());
+        try
+        {
+            ClientResult result = await CompleteChatAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
+            ChatCompletion chatCompletion = ChatCompletion.FromResponse(result.GetRawResponse());
+            scope.RecordChatCompletion(chatCompletion);
+            return ClientResult.FromValue(chatCompletion, result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     /// <summary>
@@ -105,11 +120,21 @@ public partial class ChatClient
 
         options ??= new();
         CreateChatCompletionOptions(messages, ref options);
+        using InstrumentationScope scope = _instrumentation.StartChatCompletionScope(options);
 
         using BinaryContent content = options.ToBinaryContent();
-        ClientResult result = CompleteChat(content, cancellationToken.ToRequestOptions());
-        return ClientResult.FromValue(ChatCompletion.FromResponse(result.GetRawResponse()), result.GetRawResponse());
-
+        try
+        {
+            ClientResult result = CompleteChat(content, cancellationToken.ToRequestOptions());
+            ChatCompletion chatCompletion = ChatCompletion.FromResponse(result.GetRawResponse());
+            scope.RecordChatCompletion(chatCompletion);
+            return ClientResult.FromValue(chatCompletion, result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     /// <summary>
@@ -138,12 +163,20 @@ public partial class ChatClient
 
         options ??= new();
         CreateChatCompletionOptions(messages, ref options, stream: true);
-
+        StreamingScope scope = _instrumentation.StartChatCompletionStreamingScope(options);
         using BinaryContent content = options.ToBinaryContent();
 
-        async Task<ClientResult> getResultAsync() =>
-            await CompleteChatAsync(content, cancellationToken.ToRequestOptions(streaming: true)).ConfigureAwait(false);
-        return new AsyncStreamingChatCompletionUpdateCollection(getResultAsync);
+        try
+        {
+            async Task<ClientResult> getResultAsync() =>
+                await CompleteChatAsync(content, cancellationToken.ToRequestOptions(streaming: true)).ConfigureAwait(false);
+            return new AsyncStreamingChatCompletionUpdateCollection(getResultAsync, scope);
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex);
+            throw;
+        }
     }
 
     /// <summary>
@@ -203,6 +236,6 @@ public partial class ChatClient
         options.Stream = stream 
             ? true
             : null;
-        options.StreamOptions = stream ? options.StreamOptions : null;
+        options.StreamOptions = null;// stream ? options.StreamOptions : null;
     }
 }

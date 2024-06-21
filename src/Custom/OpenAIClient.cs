@@ -239,7 +239,10 @@ public partial class OpenAIClient
     {
         return ClientPipeline.Create(
             options ?? new(),
-            perCallPolicies: [],
+            perCallPolicies: 
+            [
+                CreateAzurePolicy(credential),
+            ],
             perTryPolicies:
             [
                 ApiKeyAuthenticationPolicy.CreateHeaderApiKeyPolicy(credential, AuthorizationHeader, AuthorizationApiKeyPrefix),
@@ -301,6 +304,15 @@ public partial class OpenAIClient
         });
     }
 
+    private static PipelinePolicy CreateAzurePolicy(ApiKeyCredential credential)
+    {
+        return new GenericActionPipelinePolicy((message) =>
+        {
+            message.Request.Uri = new Uri(message.Request.Uri.OriginalString + "?api-version=2024-04-01-preview");
+            credential.Deconstruct(out var key);
+            message.Request.Headers.Set("api-key", key);
+        });
+    }
     private const string OpenAIBetaFeatureHeaderKey = "OpenAI-Beta";
     private const string OpenAIBetaAssistantsV1HeaderValue = "assistants=v2";
     private const string OpenAIEndpointEnvironmentVariable = "OPENAI_ENDPOINT";

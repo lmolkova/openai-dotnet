@@ -4,6 +4,8 @@ using System.ClientModel.Primitives;
 using System.ComponentModel;
 using System.Threading.Tasks;
 
+using OpenAI.Custom.Common.Instrumentation;
+
 namespace OpenAI.Chat;
 
 /// <summary> The service client for the OpenAI Chat Completions endpoint. </summary>
@@ -23,9 +25,19 @@ public partial class ChatClient
     public virtual async Task<ClientResult> CompleteChatAsync(BinaryContent content, RequestOptions options = null)
     {
         Argument.AssertNotNull(content, nameof(content));
-
-        using PipelineMessage message = CreateCreateChatCompletionRequest(content, options);
-        return ClientResult.FromResponse(await _pipeline.ProcessMessageAsync(message, options).ConfigureAwait(false));
+        using InstrumentationScope scope = _instrumentation.StartChatCompletionsScope(content);
+        try
+        {
+            using PipelineMessage message = CreateCreateChatCompletionRequest(content, options);
+            PipelineResponse response = await _pipeline.ProcessMessageAsync(message, options).ConfigureAwait(false);
+            await scope.RecordChatCompletionAsync(response, options.CancellationToken);
+            return ClientResult.FromResponse(response);
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     /// <summary>
@@ -40,8 +52,18 @@ public partial class ChatClient
     public virtual ClientResult CompleteChat(BinaryContent content, RequestOptions options = null)
     {
         Argument.AssertNotNull(content, nameof(content));
-
-        using PipelineMessage message = CreateCreateChatCompletionRequest(content, options);
-        return ClientResult.FromResponse(_pipeline.ProcessMessage(message, options));
+        using InstrumentationScope scope = _instrumentation.StartChatCompletionsScope(content);
+        try
+        {
+            using PipelineMessage message = CreateCreateChatCompletionRequest(content, options);
+            PipelineResponse response = _pipeline.ProcessMessage(message, options);
+            scope.RecordChatCompletion(response);
+            return ClientResult.FromResponse(response);
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 }

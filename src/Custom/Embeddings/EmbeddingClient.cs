@@ -1,3 +1,4 @@
+using OpenAI.Custom.Common.Instrumentation;
 using System;
 using System.ClientModel;
 using System.ClientModel.Primitives;
@@ -16,6 +17,7 @@ namespace OpenAI.Embeddings;
 public partial class EmbeddingClient
 {
     private readonly string _model;
+    private readonly InstrumentationFactory _instrumentation;
 
     // CUSTOM:
     // - Added `model` parameter.
@@ -69,6 +71,7 @@ public partial class EmbeddingClient
         _pipeline = pipeline;
         _model = model;
         _endpoint = endpoint;
+        _instrumentation = new InstrumentationFactory(model, endpoint);
     }
 
     // CUSTOM: Added to simplify generating a single embedding from a string input.
@@ -84,10 +87,21 @@ public partial class EmbeddingClient
 
         options ??= new();
         CreateEmbeddingGenerationOptions(BinaryData.FromObjectAsJson(input), ref options);
+        using InstrumentationScope scope = _instrumentation.StartEmbeddingScope(options);
 
         using BinaryContent content = options.ToBinaryContent();
-        ClientResult result = await GenerateEmbeddingsAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
-        return ClientResult.FromValue(EmbeddingCollection.FromResponse(result.GetRawResponse()).FirstOrDefault(), result.GetRawResponse());
+        try
+        {
+            ClientResult result = await GenerateEmbeddingsAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
+            EmbeddingCollection embeddings = EmbeddingCollection.FromResponse(result.GetRawResponse());
+            scope.RecordEmbeddings(embeddings);
+            return ClientResult.FromValue(embeddings.FirstOrDefault(), result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     // CUSTOM: Added to simplify generating a single embedding from a string input.
@@ -103,10 +117,21 @@ public partial class EmbeddingClient
 
         options ??= new();
         CreateEmbeddingGenerationOptions(BinaryData.FromObjectAsJson(input), ref options);
+        using InstrumentationScope scope = _instrumentation.StartEmbeddingScope(options);
 
-        using BinaryContent content = options.ToBinaryContent();
-        ClientResult result = GenerateEmbeddings(content, cancellationToken.ToRequestOptions());
-        return ClientResult.FromValue(EmbeddingCollection.FromResponse(result.GetRawResponse()).FirstOrDefault(), result.GetRawResponse());
+        try
+        {
+            using BinaryContent content = options.ToBinaryContent();
+            ClientResult result = GenerateEmbeddings(content, cancellationToken.ToRequestOptions());
+            EmbeddingCollection embeddings = EmbeddingCollection.FromResponse(result.GetRawResponse());
+            scope.RecordEmbeddings(embeddings);
+            return ClientResult.FromValue(embeddings.FirstOrDefault(), result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     // CUSTOM: Added to simplify passing the input as a collection of strings instead of BinaryData.
@@ -122,11 +147,21 @@ public partial class EmbeddingClient
 
         options ??= new();
         CreateEmbeddingGenerationOptions(BinaryData.FromObjectAsJson(inputs), ref options);
+        using InstrumentationScope scope = _instrumentation.StartEmbeddingScope(options);
 
-        using BinaryContent content = options.ToBinaryContent();
-        ClientResult result = await GenerateEmbeddingsAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
-        return ClientResult.FromValue(EmbeddingCollection.FromResponse(result.GetRawResponse()), result.GetRawResponse());
-
+        try
+        {
+            using BinaryContent content = options.ToBinaryContent();
+            ClientResult result = await GenerateEmbeddingsAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
+            EmbeddingCollection embeddings = EmbeddingCollection.FromResponse(result.GetRawResponse());
+            scope.RecordEmbeddings(embeddings);
+            return ClientResult.FromValue(embeddings, result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     // CUSTOM: Added to simplify passing the input as a collection of strings instead of BinaryData.
@@ -142,10 +177,21 @@ public partial class EmbeddingClient
 
         options ??= new();
         CreateEmbeddingGenerationOptions(BinaryData.FromObjectAsJson(inputs), ref options);
+        using InstrumentationScope scope = _instrumentation.StartEmbeddingScope(options);
 
-        using BinaryContent content = options.ToBinaryContent();
-        ClientResult result = GenerateEmbeddings(content, cancellationToken.ToRequestOptions());
-        return ClientResult.FromValue(EmbeddingCollection.FromResponse(result.GetRawResponse()), result.GetRawResponse());
+        try
+        {
+            using BinaryContent content = options.ToBinaryContent();
+            ClientResult result = GenerateEmbeddings(content, cancellationToken.ToRequestOptions());
+            EmbeddingCollection embeddings = EmbeddingCollection.FromResponse(result.GetRawResponse());
+            scope.RecordEmbeddings(embeddings);
+            return ClientResult.FromValue(embeddings, result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     // CUSTOM: Added to simplify passing the input as a collection of a collection of tokens instead of BinaryData.
@@ -161,10 +207,21 @@ public partial class EmbeddingClient
 
         options ??= new();
         CreateEmbeddingGenerationOptions(BinaryData.FromObjectAsJson(inputs), ref options);
+        using InstrumentationScope scope = _instrumentation.StartEmbeddingScope(options);
 
-        using BinaryContent content = options.ToBinaryContent();
-        ClientResult result = await GenerateEmbeddingsAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
-        return ClientResult.FromValue(EmbeddingCollection.FromResponse(result.GetRawResponse()), result.GetRawResponse());
+        try
+        {
+            using BinaryContent content = options.ToBinaryContent();
+            ClientResult result = await GenerateEmbeddingsAsync(content, cancellationToken.ToRequestOptions()).ConfigureAwait(false);
+            EmbeddingCollection embeddings = EmbeddingCollection.FromResponse(result.GetRawResponse());
+            scope.RecordEmbeddings(embeddings);
+            return ClientResult.FromValue(embeddings, result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     // CUSTOM: Added to simplify passing the input as a collection of a collection of tokens instead of BinaryData.
@@ -180,10 +237,21 @@ public partial class EmbeddingClient
 
         options ??= new();
         CreateEmbeddingGenerationOptions(BinaryData.FromObjectAsJson(inputs), ref options);
+        using InstrumentationScope scope = _instrumentation.StartEmbeddingScope(options);
 
-        using BinaryContent content = options.ToBinaryContent();
-        ClientResult result = GenerateEmbeddings(content, cancellationToken.ToRequestOptions());
-        return ClientResult.FromValue(EmbeddingCollection.FromResponse(result.GetRawResponse()), result.GetRawResponse());
+        try
+        {
+            using BinaryContent content = options.ToBinaryContent();
+            ClientResult result = GenerateEmbeddings(content, cancellationToken.ToRequestOptions());
+            EmbeddingCollection embeddings = EmbeddingCollection.FromResponse(result.GetRawResponse());
+            scope.RecordEmbeddings(embeddings);
+            return ClientResult.FromValue(embeddings, result.GetRawResponse());
+        }
+        catch (Exception ex)
+        {
+            scope.RecordException(ex, false);
+            throw;
+        }
     }
 
     private void CreateEmbeddingGenerationOptions(BinaryData input, ref EmbeddingGenerationOptions options)

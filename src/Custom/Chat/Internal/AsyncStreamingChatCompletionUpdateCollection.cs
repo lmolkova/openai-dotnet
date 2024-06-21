@@ -7,6 +7,8 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
+using OpenAI.Custom.Common.Instrumentation;
+
 #nullable enable
 
 namespace OpenAI.Chat;
@@ -17,17 +19,19 @@ namespace OpenAI.Chat;
 internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollection<StreamingChatCompletionUpdate>
 {
     private readonly Func<Task<ClientResult>> _getResultAsync;
+    private readonly StreamingScope _streamingScope;
 
-    public AsyncStreamingChatCompletionUpdateCollection(Func<Task<ClientResult>> getResultAsync) : base()
+    public AsyncStreamingChatCompletionUpdateCollection(Func<Task<ClientResult>> getResultAsync, StreamingScope scope) : base()
     {
         Argument.AssertNotNull(getResultAsync, nameof(getResultAsync));
 
         _getResultAsync = getResultAsync;
+        _streamingScope = scope;
     }
 
     public override IAsyncEnumerator<StreamingChatCompletionUpdate> GetAsyncEnumerator(CancellationToken cancellationToken = default)
     {
-        return new AsyncStreamingChatUpdateEnumerator(_getResultAsync, this, cancellationToken);
+        return new AsyncStreamingChatUpdateEnumerator(_getResultAsync, this, _streamingScope, cancellationToken);
     }
 
     private sealed class AsyncStreamingChatUpdateEnumerator : IAsyncEnumerator<StreamingChatCompletionUpdate>
@@ -36,6 +40,7 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
 
         private readonly Func<Task<ClientResult>> _getResultAsync;
         private readonly AsyncStreamingChatCompletionUpdateCollection _enumerable;
+        private readonly StreamingScope _streamingScope;
         private readonly CancellationToken _cancellationToken;
 
         // These enumerators represent what is effectively a doubly-nested
@@ -53,6 +58,7 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
 
         public AsyncStreamingChatUpdateEnumerator(Func<Task<ClientResult>> getResultAsync,
             AsyncStreamingChatCompletionUpdateCollection enumerable,
+            StreamingScope scope,
             CancellationToken cancellationToken)
         {
             Debug.Assert(getResultAsync is not null);
@@ -60,7 +66,9 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
 
             _getResultAsync = getResultAsync!;
             _enumerable = enumerable!;
+            _streamingScope = scope;
             _cancellationToken = cancellationToken;
+            _cancellationToken.Register(_streamingScope.RecordCancellation);
         }
 
         StreamingChatCompletionUpdate IAsyncEnumerator<StreamingChatCompletionUpdate>.Current
@@ -70,6 +78,7 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
         {
             if (_events is null && _started)
             {
+                _streamingScope.RecordCancellation();
                 throw new ObjectDisposedException(nameof(AsyncStreamingChatUpdateEnumerator));
             }
 
@@ -80,6 +89,7 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
             if (_updates is not null && _updates.MoveNext())
             {
                 _current = _updates.Current;
+                _streamingScope?.RecordChunk(_current);
                 return true;
             }
 
@@ -87,6 +97,7 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
             {
                 if (_events.Current.Data == _terminalData)
                 {
+                    _streamingScope.Dispose();
                     _current = default;
                     return false;
                 }
@@ -98,10 +109,12 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
                 if (_updates.MoveNext())
                 {
                     _current = _updates.Current;
+                    _streamingScope?.RecordChunk(_current);
                     return true;
                 }
             }
 
+            _streamingScope.Dispose();
             _current = default;
             return false;
         }
@@ -130,6 +143,7 @@ internal class AsyncStreamingChatCompletionUpdateCollection : AsyncResultCollect
 
         private async ValueTask DisposeAsyncCore()
         {
+            _streamingScope.Dispose();
             if (_events is not null)
             {
                 await _events.DisposeAsync().ConfigureAwait(false);
