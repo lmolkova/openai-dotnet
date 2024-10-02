@@ -8,7 +8,7 @@ namespace OpenAI.Chat;
 public partial class ChatMessageContent : Collection<ChatMessageContentPart>
 {
     public ChatMessageContent()
-        : this(new ChatMessageContentPart[0])
+        : this([])
     {
     }
 

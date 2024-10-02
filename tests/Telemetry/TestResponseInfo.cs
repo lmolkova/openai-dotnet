@@ -32,7 +32,7 @@ public class TestResponseInfo
         };
     }
 
-    public static string GetFinishReasonString(ChatFinishReason? finishReason) => finishReason switch
+    private static string GetFinishReasonString(ChatFinishReason? finishReason) => finishReason switch
     {
         ChatFinishReason.ContentFilter => "content_filter",
         ChatFinishReason.FunctionCall => "function_call",

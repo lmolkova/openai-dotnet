@@ -95,26 +95,12 @@ internal class OpenTelemetryScope : IDisposable
 
     public void RecordStreamingUpdate(StreamingChatCompletionUpdate update)
     {
-        // TODO - we'll add content events later, for now let's just report spans
-        if (update.FinishReason != null)
-        {
-            _finishReason = GetFinishReason(update.FinishReason);
-        }
-
-        if (update.CompletionId != null)
-        {
-            _responseId = update.CompletionId;
-        }
-
-        if (update.Model != null)
-        {
-            _responseModel = update.Model;
-        }
-
-        if (update.Usage != null)
-        {
-            _tokenUsage = update.Usage;
-        }
+        // We'll add content events later once there is a way, for now let's just report
+        // span attributes for streaming calls
+        _finishReason ??= GetFinishReason(update.FinishReason);
+        _responseId ??= update.CompletionId;
+        _responseModel ??= update.Model;
+        _tokenUsage ??= update.Usage;
     }
 
     public void RecordException(Exception ex)
@@ -130,7 +116,6 @@ internal class OpenTelemetryScope : IDisposable
 
     public void Dispose()
     {
-        // idempotent closing
         if (Interlocked.Exchange(ref _closed, 1) == 0)
         {
             End();
