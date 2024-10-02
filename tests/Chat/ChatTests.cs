@@ -12,6 +12,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -764,9 +765,9 @@ public class ChatTests : SyncAsyncTestBase
             : client.CompleteChat(messages);
 
         TestResponseInfo testResponseInfo = TestResponseInfo.FromChatCompletion(result.Value);
-        activityListener.ValidateChatActivity(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
-        meterListener.ValidateDuration(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
-        meterListener.ValidateUsage(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        activityListener.ValidateChatActivity(testResponseInfo);
+        meterListener.ValidateDuration(testResponseInfo);
+        meterListener.ValidateUsage(testResponseInfo);
     }
 
     [Test]
@@ -786,14 +787,16 @@ public class ChatTests : SyncAsyncTestBase
         {
             testResponseInfo.WithStreamingUpdate(chatUpdate);
         }
-        activityListener.ValidateChatActivity(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
-        meterListener.ValidateDuration(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
-        meterListener.ValidateUsage(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        activityListener.ValidateChatActivity(testResponseInfo);
+        meterListener.ValidateDuration(testResponseInfo);
+        meterListener.ValidateUsage(testResponseInfo);
     }
 
     [Test]
     [NonParallelizable]
-    public void ChatStreamingCancelledWithTracingAndMetrics()
+    [TestCase(true)]
+    [TestCase(false)]
+    public void ChatStreamingUserErrorsWithTracingAndMetrics(bool cancellation)
     {
         AssertAsyncOnly();
         using TestActivityListener activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
@@ -806,19 +809,31 @@ public class ChatTests : SyncAsyncTestBase
         AsyncCollectionResult<StreamingChatCompletionUpdate> streamingResult = client.CompleteChatStreamingAsync(messages,
             cancellationToken: cts.Token);
 
+        Type expectedExceptionType = cancellation ? typeof(OperationCanceledException) : typeof(DivideByZeroException);
         TestResponseInfo testResponseInfo = new();
-        Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        Assert.ThrowsAsync(expectedExceptionType, async () =>
         {
             await foreach (StreamingChatCompletionUpdate chatUpdate in streamingResult)
             {
                 testResponseInfo.WithStreamingUpdate(chatUpdate);
-                cts.Cancel();
+                if (cancellation)
+                {
+                    cts.Cancel();
+                }
+                else
+                {
+                    throw new DivideByZeroException();
+                }
             }
         });
-        testResponseInfo.ErrorType = typeof(TaskCanceledException).FullName;
-        activityListener.ValidateChatActivity(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
-        meterListener.ValidateDuration(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
-        meterListener.ValidateUsage(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+
+        // instrumentation does not have any information about the error thown in the user code, it only gets
+        // partial content and then scope is disposed
+        // so it reports it as an unknown "error"
+        testResponseInfo.ErrorType = cancellation ? typeof(OperationCanceledException).FullName : "error";
+        activityListener.ValidateChatActivity(testResponseInfo);
+        meterListener.ValidateDuration(testResponseInfo);
+        meterListener.ValidateUsage(testResponseInfo);
     }
 
     [Test]

@@ -1,10 +1,13 @@
 ﻿using NUnit.Framework;
 using OpenAI.Chat;
+using OpenAI.Tests.Telemetry;
 using OpenAI.Tests.Utility;
 using System;
 using System.ClientModel;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -249,6 +252,53 @@ public class ChatMockTests : SyncAsyncTestBase
         Assert.That(() => enumerator.MoveNext(), Throws.InstanceOf<OperationCanceledException>());
     }
 
+    [Test]
+    [NonParallelizable]
+    public void ChatStreamingTransportErrorWithTracingAndMetrics()
+    {
+        AssertAsyncOnly();
+
+        BinaryData content = BinaryData.FromString(
+            """
+            data: {"id":"chatcmpl-A7mKGugwaczn3YyrJLlZY6CM0Wlkr","object":"chat.completion.chunk","created":1726417424,"model":"gpt-4o-mini-2024-07-18","choices":[{"index":0,"delta":{"role":"assistant","content":""}}],"usage":null}
+            """);
+
+        MockPipelineResponse response = new(200)
+        {
+            ContentStream = new TestStream(content, () => new SocketException())
+        };
+
+        OpenAIClientOptions options = new OpenAIClientOptions() 
+        {
+            Transport = new MockPipelineTransport(response)
+        };
+        
+        ChatClient client = new ChatClient("gpt-4o-mini", s_fakeCredential, options);
+
+        using TestActivityListener activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using TestMeterListener meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
+
+        AsyncCollectionResult<StreamingChatCompletionUpdate> streamingResult = 
+            client.CompleteChatStreamingAsync(new UserChatMessage("Hello, world!"));
+
+        TestResponseInfo testResponseInfo = new() 
+        { 
+            ErrorType = typeof(SocketException).FullName
+        };
+
+        Assert.ThrowsAsync<SocketException>(async () =>
+        {
+            await foreach (StreamingChatCompletionUpdate chatUpdate in streamingResult)
+            {
+                testResponseInfo.WithStreamingUpdate(chatUpdate);
+            }
+        });
+
+        activityListener.ValidateChatActivity(testResponseInfo);
+        meterListener.ValidateDuration(testResponseInfo);
+        meterListener.ValidateUsage(testResponseInfo);
+    }
+
     private async ValueTask<StreamingChatCompletionUpdate> InvokeCompleteChatStreamingAsync(ChatClient client)
     {
         if (IsAsync)
@@ -280,5 +330,65 @@ public class ChatMockTests : SyncAsyncTestBase
         {
             Transport = new MockPipelineTransport(response)
         };
+    }
+
+    private class TestStream : Stream
+    {
+        private readonly byte[] _content;
+        private readonly Action _callback;
+        private long _position;
+        public TestStream(BinaryData content, Action callback)
+        {
+            _content = content.ToArray();
+            _position = 0;
+            _callback = callback;
+        }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => _content.Length + 1;
+
+        public override long Position { get => _position; set => throw new NotSupportedException(); }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_position == _content.Length)
+            {
+                _callback();
+                _position++;
+                return 1;
+            }
+
+            int read = 0;
+            for (; read < count && read < _content.Length && _position < _content.Length; read++, _position++)
+            {
+                buffer[offset + read] = _content[read];
+            }
+
+            return read;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

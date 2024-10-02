@@ -34,7 +34,7 @@ internal class TestActivityListener : IDisposable
         _listener.Dispose();
     }
 
-    public void ValidateChatActivity(TestResponseInfo response, string requestModel, string host, int port)
+    public void ValidateChatActivity(TestResponseInfo response, string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
     {
         Assert.AreEqual(1, Activities.Count);
         var activity = Activities.Single();

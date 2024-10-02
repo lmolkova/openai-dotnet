@@ -60,7 +60,8 @@ internal class TestMeterListener : IDisposable
         _listener.Dispose();
     }
 
-    private static void ValidateChatMetricTags(TestMeasurement measurement, TestResponseInfo response, string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
+    private static void ValidateChatMetricTags(TestMeasurement measurement, TestResponseInfo response,
+        string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
     {
         Assert.AreEqual("openai", measurement.tags["gen_ai.system"]);
         Assert.AreEqual("chat", measurement.tags["gen_ai.operation.name"]);
@@ -87,7 +88,8 @@ internal class TestMeterListener : IDisposable
         }
     }
 
-    public TestMeasurement ValidateDuration(TestResponseInfo response, string requestModel, string host, int port)
+    public TestMeasurement ValidateDuration(TestResponseInfo response,
+        string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
     {
         var duration = GetInstrument("gen_ai.client.operation.duration");
         Assert.IsNotNull(duration);
@@ -104,7 +106,8 @@ internal class TestMeterListener : IDisposable
         return measurement;
     }
 
-    public void ValidateUsage(TestResponseInfo response, string requestModel, string host, int port)
+    public void ValidateUsage(TestResponseInfo response,
+        string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
     {
         var usage = GetInstrument("gen_ai.client.token.usage");
 

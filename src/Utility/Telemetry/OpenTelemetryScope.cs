@@ -111,7 +111,7 @@ internal class OpenTelemetryScope : IDisposable
 
     public void RecordCancellation()
     {
-        _errorType = typeof(TaskCanceledException).FullName;
+        _errorType = typeof(OperationCanceledException).FullName;
     }
 
     public void Dispose()

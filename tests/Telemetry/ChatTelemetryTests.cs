@@ -19,9 +19,9 @@ namespace OpenAI.Tests.Telemetry;
 [Category("Smoke")]
 public class ChatTelemetryTests
 {
-    private const string RequestModel = "requestModel";
-    private const string Host = "host";
-    private const int Port = 42;
+    private const string RequestModel = "gpt-4o-mini";
+    private const string Host = "api.openai.com";
+    private const int Port = 443;
     private static readonly string Endpoint = $"https://{Host}:{Port}/path";
     private const string CompletionId = "chatcmpl-9fG9OILMJnKZARXDwxoCnLcvDsDDX";
     private const string CompletionContent = "hello world";
@@ -245,7 +245,7 @@ public class ChatTelemetryTests
             scope.RecordCancellation();
         }
 
-        TestResponseInfo response = new() { ErrorType = typeof(TaskCanceledException).FullName };
+        TestResponseInfo response = new() { ErrorType = typeof(OperationCanceledException).FullName };
 
         activityListener.ValidateChatActivity(response, RequestModel, Host, Port);
         meterListener.ValidateDuration(response, RequestModel, Host, Port);
@@ -297,8 +297,8 @@ public class ChatTelemetryTests
                     var completionTokens = Random.Shared.Next(100);
 
                     var completion = CreateChatCompletion(promptTokens, completionTokens);
-                    totalPromptTokens += promptTokens;
-                    totalCompletionTokens += completionTokens;
+                    Interlocked.Add(ref totalCompletionTokens, completionTokens);
+                    Interlocked.Add(ref totalPromptTokens, promptTokens);
                     scope.RecordChatCompletion(completion);
                 }
                 else
