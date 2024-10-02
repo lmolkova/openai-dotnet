@@ -67,4 +67,4 @@ Here's a trace produced by [OpenTelemetry sample](../examples/OpenTelemetryExamp
 
 The following sources and meters are available:
 
-- `Experimental.OpenAI.ChatClient` - records traces and metrics for `ChatClient` operations (except streaming and protocol methods which are not instrumented yet)
+- `Experimental.OpenAI.ChatClient` - records traces and metrics for `ChatClient` operations (except protocol methods which are not instrumented yet)

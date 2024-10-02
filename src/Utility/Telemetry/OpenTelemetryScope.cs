@@ -3,7 +3,8 @@ using System;
 using System.ClientModel;
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
-
+using System.Threading;
+using System.Threading.Tasks;
 using static OpenAI.Telemetry.OpenTelemetryConstants;
 
 namespace OpenAI.Telemetry;
@@ -25,6 +26,15 @@ internal class OpenTelemetryScope : IDisposable
     private Stopwatch _duration;
     private Activity _activity;
     private TagList _commonTags;
+
+    private string _responseModel;
+    private string _responseId;
+    private string _finishReason;
+    private string _errorType;
+    private Exception _exception;
+    private ChatTokenUsage _tokenUsage;
+
+    private int _closed = 0;
 
     private OpenTelemetryScope(
         string model, string operationName,
@@ -77,28 +87,54 @@ internal class OpenTelemetryScope : IDisposable
 
     public void RecordChatCompletion(ChatCompletion completion)
     {
-        RecordMetrics(completion.Model, null, completion.Usage?.InputTokenCount, completion.Usage?.OutputTokenCount);
+        _responseModel = completion.Model;
+        _responseId = completion.Id;
+        _finishReason = GetFinishReason(completion.FinishReason);
+        _tokenUsage = completion.Usage;
+    }
 
-        if (_activity?.IsAllDataRequested == true)
+    public void RecordStreamingUpdate(StreamingChatCompletionUpdate update)
+    {
+        // TODO - we'll add content events later, for now let's just report spans
+        if (update.FinishReason != null)
         {
-            RecordResponseAttributes(completion.Id, completion.Model, completion.FinishReason, completion.Usage);
+            _finishReason = GetFinishReason(update.FinishReason);
+        }
+
+        if (update.CompletionId != null)
+        {
+            _responseId = update.CompletionId;
+        }
+
+        if (update.Model != null)
+        {
+            _responseModel = update.Model;
+        }
+
+        if (update.Usage != null)
+        {
+            _tokenUsage = update.Usage;
         }
     }
 
     public void RecordException(Exception ex)
     {
-        var errorType = GetErrorType(ex);
-        RecordMetrics(null, errorType, null, null);
-        if (_activity?.IsAllDataRequested == true)
-        {
-            _activity?.SetTag(OpenTelemetryConstants.ErrorTypeKey, errorType);
-            _activity?.SetStatus(ActivityStatusCode.Error, ex?.Message ?? errorType);
-        }
+        _errorType = GetErrorType(ex);
+        _exception = ex;
+    }
+
+    public void RecordCancellation()
+    {
+        _errorType = typeof(TaskCanceledException).FullName;
     }
 
     public void Dispose()
     {
-        _activity?.Stop();
+        // idempotent closing
+        if (Interlocked.Exchange(ref _closed, 1) == 0)
+        {
+            End();
+        }
     }
 
     private void RecordCommonAttributes()
@@ -110,68 +146,72 @@ internal class OpenTelemetryScope : IDisposable
         _activity.SetTag(GenAiOperationNameKey, _operationName);
     }
 
-    private void RecordMetrics(string responseModel, string errorType, int? inputTokensUsage, int? outputTokensUsage)
+    private void End()
     {
+        if (_finishReason == null && _errorType == null)
+        {
+            // if there was no finish reason and no error, the response was not received fully
+            // which means there was some unexpected unknown error, let's report it.
+            _errorType = "error";
+        }
+
+        RecordResponseOnActivity();
+        
         // tags is a struct, let's copy and modify them
-        var tags = _commonTags;
+        var metricTags = _commonTags;
 
-        if (responseModel != null)
+        if (_responseModel != null)
         {
-            tags.Add(GenAiResponseModelKey, responseModel);
+            metricTags.Add(GenAiResponseModelKey, _responseModel);
         }
 
-        if (inputTokensUsage != null)
+        if (_errorType != null)
         {
-            var inputUsageTags = tags;
+            metricTags.Add(ErrorTypeKey, _errorType);
+        }
+
+        if (_tokenUsage != null)
+        {
+            var inputUsageTags = metricTags;
             inputUsageTags.Add(GenAiTokenTypeKey, "input");
-            s_tokens.Record(inputTokensUsage.Value, inputUsageTags);
-        }
+            s_tokens.Record(_tokenUsage.InputTokenCount, inputUsageTags);
 
-        if (outputTokensUsage != null)
-        {
-            var outputUsageTags = tags;
+            var outputUsageTags = metricTags;
             outputUsageTags.Add(GenAiTokenTypeKey, "output");
-            s_tokens.Record(outputTokensUsage.Value, outputUsageTags);
+            s_tokens.Record(_tokenUsage.OutputTokenCount, outputUsageTags);
         }
 
-        if (errorType != null)
-        {
-            tags.Add(ErrorTypeKey, errorType);
-        }
-
-        s_duration.Record(_duration.Elapsed.TotalSeconds, tags);
+        s_duration.Record(_duration.Elapsed.TotalSeconds, metricTags);
+        _activity?.Stop();
     }
 
-    private void RecordResponseAttributes(string responseId, string model, ChatFinishReason? finishReason, ChatTokenUsage usage)
+    private void RecordResponseOnActivity()
     {
-        SetActivityTagIfNotNull(GenAiResponseIdKey, responseId);
-        SetActivityTagIfNotNull(GenAiResponseModelKey, model);
-        SetActivityTagIfNotNull(GenAiUsageInputTokensKey, usage?.InputTokenCount);
-        SetActivityTagIfNotNull(GenAiUsageOutputTokensKey, usage?.OutputTokenCount);
-        SetFinishReasonAttribute(finishReason);
-    }
-
-    private void SetFinishReasonAttribute(ChatFinishReason? finishReason)
-    {
-        if (finishReason == null)
+        if (_activity?.IsAllDataRequested != true)
         {
             return;
         }
+        SetActivityTagIfNotNull(GenAiResponseIdKey, _responseId);
+        SetActivityTagIfNotNull(GenAiResponseModelKey, _responseModel);
+        SetActivityTagIfNotNull(GenAiUsageInputTokensKey, _tokenUsage?.InputTokenCount);
+        SetActivityTagIfNotNull(GenAiUsageOutputTokensKey, _tokenUsage?.OutputTokenCount);
+        _activity.SetTag(GenAiResponseFinishReasonKey, new[] { _finishReason });
+        if (_errorType != null)
+        {
+            _activity.SetTag(ErrorTypeKey, _errorType);
+            _activity.SetStatus(ActivityStatusCode.Error, _exception?.Message ?? _errorType);
+        }
+    }
 
-        var reasonStr = finishReason switch
+    private string GetFinishReason(ChatFinishReason? finishReason) => finishReason switch
         {
             ChatFinishReason.ContentFilter => "content_filter",
             ChatFinishReason.FunctionCall => "function_call",
             ChatFinishReason.Length => "length",
             ChatFinishReason.Stop => "stop",
             ChatFinishReason.ToolCalls => "tool_calls",
-            _ => finishReason.ToString(),
+            _ => finishReason?.ToString(),
         };
-
-        // There could be multiple finish reasons, so semantic conventions use array type for the corrresponding attribute.
-        // It's likely to change, but for now let's report it as array.
-        _activity.SetTag(GenAiResponseFinishReasonKey, new[] { reasonStr });
-    }
 
     private string GetChatMessageRole(ChatMessageRole? role) =>
         role switch

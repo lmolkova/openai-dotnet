@@ -763,24 +763,62 @@ public class ChatTests : SyncAsyncTestBase
             ? await client.CompleteChatAsync(messages)
             : client.CompleteChat(messages);
 
-        Assert.AreEqual(1, activityListener.Activities.Count);
-        TestActivityListener.ValidateChatActivity(activityListener.Activities.Single(), result.Value);
+        TestResponseInfo testResponseInfo = TestResponseInfo.FromChatCompletion(result.Value);
+        activityListener.ValidateChatActivity(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        meterListener.ValidateDuration(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        meterListener.ValidateUsage(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+    }
 
-        List<TestMeasurement> durations = meterListener.GetMeasurements("gen_ai.client.operation.duration");
-        Assert.AreEqual(1, durations.Count);
-        ValidateChatMetricTags(durations.Single(), result.Value);
+    [Test]
+    [NonParallelizable]
+    public async Task ChatStreamingAsyncWithTracingAndMetrics()
+    {
+        AssertAsyncOnly();
+        using TestActivityListener activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using TestMeterListener meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
 
-        List<TestMeasurement> usages = meterListener.GetMeasurements("gen_ai.client.token.usage");
-        Assert.AreEqual(2, usages.Count);
+        ChatClient client = GetTestClient<ChatClient>(TestScenario.Chat);
+        IEnumerable<ChatMessage> messages = [new UserChatMessage("Hello, world!")];
+        AsyncCollectionResult<StreamingChatCompletionUpdate> streamingResult = client.CompleteChatStreamingAsync(messages);
 
-        Assert.True(usages[0].tags.TryGetValue("gen_ai.token.type", out var type));
-        Assert.IsInstanceOf<string>(type);
+        TestResponseInfo testResponseInfo = new();
+        await foreach (StreamingChatCompletionUpdate chatUpdate in streamingResult)
+        {
+            testResponseInfo.WithStreamingUpdate(chatUpdate);
+        }
+        activityListener.ValidateChatActivity(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        meterListener.ValidateDuration(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        meterListener.ValidateUsage(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+    }
 
-        TestMeasurement input = (type is "input") ? usages[0] : usages[1];
-        TestMeasurement output = (type is "input") ? usages[1] : usages[0];
+    [Test]
+    [NonParallelizable]
+    public void ChatStreamingCancelledWithTracingAndMetrics()
+    {
+        AssertAsyncOnly();
+        using TestActivityListener activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using TestMeterListener meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
 
-        Assert.AreEqual(result.Value.Usage.InputTokenCount, input.value);
-        Assert.AreEqual(result.Value.Usage.OutputTokenCount, output.value);
+        ChatClient client = GetTestClient<ChatClient>(TestScenario.Chat);
+        IEnumerable<ChatMessage> messages = [new UserChatMessage("Hello, world!")];
+
+        using CancellationTokenSource cts = new();
+        AsyncCollectionResult<StreamingChatCompletionUpdate> streamingResult = client.CompleteChatStreamingAsync(messages,
+            cancellationToken: cts.Token);
+
+        TestResponseInfo testResponseInfo = new();
+        Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (StreamingChatCompletionUpdate chatUpdate in streamingResult)
+            {
+                testResponseInfo.WithStreamingUpdate(chatUpdate);
+                cts.Cancel();
+            }
+        });
+        testResponseInfo.ErrorType = typeof(TaskCanceledException).FullName;
+        activityListener.ValidateChatActivity(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        meterListener.ValidateDuration(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
+        meterListener.ValidateUsage(testResponseInfo, "gpt-4o-mini", "api.openai.com", 443);
     }
 
     [Test]

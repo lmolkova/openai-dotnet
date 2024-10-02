@@ -2,7 +2,6 @@
 // Licensed under the MIT License.
 
 using NUnit.Framework;
-using OpenAI.Chat;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -35,8 +34,11 @@ internal class TestActivityListener : IDisposable
         _listener.Dispose();
     }
 
-    public static void ValidateChatActivity(Activity activity, ChatCompletion response, string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
+    public void ValidateChatActivity(TestResponseInfo response, string requestModel, string host, int port)
     {
+        Assert.AreEqual(1, Activities.Count);
+        var activity = Activities.Single();
+
         Assert.NotNull(activity);
         Assert.AreEqual($"chat {requestModel}", activity.DisplayName);
         Assert.AreEqual("chat", activity.GetTagItem("gen_ai.operation.name"));
@@ -46,27 +48,22 @@ internal class TestActivityListener : IDisposable
         Assert.AreEqual(host, activity.GetTagItem("server.address"));
         Assert.AreEqual(port, activity.GetTagItem("server.port"));
 
-        if (response != null)
-        {
-            Assert.AreEqual(response.Model, activity.GetTagItem("gen_ai.response.model"));
-            Assert.AreEqual(response.Id, activity.GetTagItem("gen_ai.response.id"));
-            Assert.AreEqual(new[] { response.FinishReason.ToString().ToLower() }, activity.GetTagItem("gen_ai.response.finish_reasons"));
-            Assert.AreEqual(response.Usage.OutputTokenCount, activity.GetTagItem("gen_ai.usage.output_tokens"));
-            Assert.AreEqual(response.Usage.InputTokenCount, activity.GetTagItem("gen_ai.usage.input_tokens"));
+        Assert.AreEqual(response.Model, activity.GetTagItem("gen_ai.response.model"));
+        Assert.AreEqual(response.Id, activity.GetTagItem("gen_ai.response.id"));
+        Assert.AreEqual(new[] { response.FinishReason }, activity.GetTagItem("gen_ai.response.finish_reasons"));
+        Assert.AreEqual(response.PromptTokens, activity.GetTagItem("gen_ai.usage.input_tokens"));
+        Assert.AreEqual(response.CompletionTokens, activity.GetTagItem("gen_ai.usage.output_tokens"));
+
+        if (response.FinishReason != null) {
             Assert.AreEqual(ActivityStatusCode.Unset, activity.Status);
             Assert.Null(activity.StatusDescription);
             Assert.Null(activity.GetTagItem("error.type"));
         }
-        else
+
+        if (response.ErrorType != null)
         {
             Assert.AreEqual(ActivityStatusCode.Error, activity.Status);
-            Assert.NotNull(activity.GetTagItem("error.type"));
+            Assert.AreEqual(response.ErrorType, activity.GetTagItem("error.type"));
         }
-    }
-
-    public static void ValidateChatActivity(Activity activity, Exception ex, string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
-    {
-        ValidateChatActivity(activity, (ChatCompletion)null, requestModel, host, port);
-        Assert.AreEqual(ex.GetType().FullName, activity.GetTagItem("error.type"));
     }
 }

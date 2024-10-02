@@ -5,14 +5,11 @@ using System;
 using System.ClientModel.Primitives;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Diagnostics.Metrics;
 using System.Linq;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using static OpenAI.Tests.Telemetry.TestMeterListener;
-using static OpenAI.Tests.Telemetry.TestActivityListener;
 
 namespace OpenAI.Tests.Telemetry;
 
@@ -64,8 +61,11 @@ public class ChatTelemetryTests
         scope.RecordChatCompletion(response);
         scope.Dispose();
 
-        ValidateDuration(meterListener, response, elapsedMin.Elapsed, elapsedMax.Elapsed);
-        ValidateUsage(meterListener, response, PromptTokens, CompletionTokens);
+        var measurement = meterListener.ValidateDuration(TestResponseInfo.FromChatCompletion(response), RequestModel, Host, Port);
+        Assert.GreaterOrEqual((double)measurement.value, elapsedMin.Elapsed.TotalSeconds);
+        Assert.LessOrEqual((double)measurement.value, elapsedMax.Elapsed.TotalSeconds);
+
+        meterListener.ValidateUsage(TestResponseInfo.FromChatCompletion(response), RequestModel, Host, Port);
     }
 
     [Test]
@@ -76,10 +76,10 @@ public class ChatTelemetryTests
 
         using (var scope = telemetry.StartChatScope(new ChatCompletionOptions()))
         {
-            scope.RecordException(new TaskCanceledException());
+            scope.RecordException(new Exception());
         }
 
-        ValidateDuration(meterListener, null, TimeSpan.MinValue, TimeSpan.MaxValue);
+        meterListener.ValidateDuration(new TestResponseInfo() { ErrorType = typeof(Exception).FullName }, RequestModel, Host, Port);
         Assert.IsNull(meterListener.GetMeasurements("gen_ai.client.token.usage"));
     }
 
@@ -107,7 +107,7 @@ public class ChatTelemetryTests
         Assert.Null(Activity.Current);
         Assert.AreEqual(1, listener.Activities.Count);
 
-        ValidateChatActivity(listener.Activities.Single(), chatCompletion, RequestModel, Host, Port);
+        listener.ValidateChatActivity(TestResponseInfo.FromChatCompletion(chatCompletion), RequestModel, Host, Port);
     }
 
     [Test]
@@ -134,15 +134,14 @@ public class ChatTelemetryTests
         }
         Assert.Null(Activity.Current);
 
-        ValidateChatActivity(listener.Activities.Single(), chatCompletion, RequestModel, Host, Port);
+        listener.ValidateChatActivity(TestResponseInfo.FromChatCompletion(chatCompletion), RequestModel, Host, Port);
     }
 
     [Test]
     public void ChatTracingException()
     {
         var telemetry = new OpenTelemetrySource(RequestModel, new Uri(Endpoint));
-        using var listener = new TestActivityListener("Experimental.OpenAI.ChatClient");
-
+        using var activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
         var error = new SocketException(42, "test error");
         using (var scope = telemetry.StartChatScope(new ChatCompletionOptions()))
         {
@@ -151,7 +150,124 @@ public class ChatTelemetryTests
 
         Assert.Null(Activity.Current);
 
-        ValidateChatActivity(listener.Activities.Single(), error, RequestModel, Host, Port);
+        activityListener.ValidateChatActivity(new TestResponseInfo() { ErrorType = error.GetType().FullName }, RequestModel, Host, Port);
+    }
+
+    [Test]
+    public void ChatStreaming()
+    {
+        var telemetry = new OpenTelemetrySource(RequestModel, new Uri(Endpoint));
+        using var activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using var meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
+
+        using (var scope = telemetry.StartChatScope(new ChatCompletionOptions()))
+        {
+            scope.RecordStreamingUpdate(CreateStreamingUpdate(model: ResponseModel));
+            scope.RecordStreamingUpdate(CreateStreamingUpdate(finishReason: FinishReason));
+        }
+
+        TestResponseInfo response = new ()
+        {
+            Model = ResponseModel,
+            Id = CompletionId,
+            FinishReason = FinishReason
+        };
+
+        activityListener.ValidateChatActivity(response, RequestModel, Host, Port);
+        meterListener.ValidateDuration(response, RequestModel, Host, Port);
+        Assert.Null(meterListener.GetInstrument("gen_ai.client.token.usage"));
+    }
+
+    [Test]
+    public void ChatStreamingWithUsage()
+    {
+        var telemetry = new OpenTelemetrySource(RequestModel, new Uri(Endpoint));
+        using var activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using var meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
+
+        using (var scope = telemetry.StartChatScope(new ChatCompletionOptions()))
+        {
+            scope.RecordStreamingUpdate(CreateStreamingUpdate(model: ResponseModel));
+            scope.RecordStreamingUpdate(CreateStreamingUpdate(finishReason: FinishReason));
+            scope.RecordStreamingUpdate(CreateStreamingUpdate(promptTokens: PromptTokens, completionTokens: CompletionTokens));
+        }
+
+        Assert.Null(Activity.Current);
+
+        TestResponseInfo response = new()
+        {
+            Model = ResponseModel,
+            Id = CompletionId,
+            FinishReason = FinishReason,
+            PromptTokens = PromptTokens,
+            CompletionTokens = CompletionTokens
+        };
+
+        activityListener.ValidateChatActivity(response, RequestModel, Host, Port);
+        meterListener.ValidateDuration(response, RequestModel, Host, Port);
+        meterListener.ValidateUsage(response, RequestModel, Host, Port);
+    }
+
+    [Test]
+    public void ChatStreamingWithError()
+    {
+        var telemetry = new OpenTelemetrySource(RequestModel, new Uri(Endpoint));
+        using var activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using var meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
+
+        using (var scope = telemetry.StartChatScope(new ChatCompletionOptions()))
+        {
+            scope.RecordStreamingUpdate(CreateStreamingUpdate(model: ResponseModel));
+            scope.RecordException(new Exception("boom"));
+        }
+
+        TestResponseInfo response = new()
+        {
+            Model = ResponseModel,
+            Id = CompletionId,
+            ErrorType = typeof(Exception).FullName
+        };
+
+        activityListener.ValidateChatActivity(response, RequestModel, Host, Port);
+        meterListener.ValidateDuration(response, RequestModel, Host, Port);
+        Assert.Null(meterListener.GetInstrument("gen_ai.client.token.usage"));
+    }
+
+    [Test]
+    public void ChatStreamingWithCancellation()
+    {
+        var telemetry = new OpenTelemetrySource(RequestModel, new Uri(Endpoint));
+        using var activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using var meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
+
+        using (var scope = telemetry.StartChatScope(new ChatCompletionOptions()))
+        {
+            scope.RecordCancellation();
+        }
+
+        TestResponseInfo response = new() { ErrorType = typeof(TaskCanceledException).FullName };
+
+        activityListener.ValidateChatActivity(response, RequestModel, Host, Port);
+        meterListener.ValidateDuration(response, RequestModel, Host, Port);
+        Assert.Null(meterListener.GetInstrument("gen_ai.client.token.usage"));
+    }
+
+    [Test]
+    public void ChatStreamingEmpty()
+    {
+        var telemetry = new OpenTelemetrySource(RequestModel, new Uri(Endpoint));
+        using var activityListener = new TestActivityListener("Experimental.OpenAI.ChatClient");
+        using var meterListener = new TestMeterListener("Experimental.OpenAI.ChatClient");
+
+        using (var scope = telemetry.StartChatScope(new ChatCompletionOptions()))
+        {
+        }
+
+        TestResponseInfo response = new() { ErrorType = "error" };
+
+        activityListener.ValidateChatActivity(response, RequestModel, Host, Port);
+        meterListener.ValidateDuration(response, RequestModel, Host, Port);
+        Assert.Null(meterListener.GetInstrument("gen_ai.client.token.usage"));
     }
 
     [Test]
@@ -219,50 +335,6 @@ public class ChatTelemetryTests
         messagesProperty.SetValue(options, messages.ToList());
     }
 
-    private void ValidateDuration(TestMeterListener listener, ChatCompletion response, TimeSpan durationMin, TimeSpan durationMax)
-    {
-        var duration = listener.GetInstrument("gen_ai.client.operation.duration");
-        Assert.IsNotNull(duration);
-        Assert.IsInstanceOf<Histogram<double>>(duration);
-
-        var measurements = listener.GetMeasurements("gen_ai.client.operation.duration");
-        Assert.IsNotNull(measurements);
-        Assert.AreEqual(1, measurements.Count);
-
-        var measurement = measurements[0];
-        Assert.IsInstanceOf<double>(measurement.value);
-        Assert.GreaterOrEqual((double)measurement.value, durationMin.TotalSeconds);
-        Assert.LessOrEqual((double)measurement.value, durationMax.TotalSeconds);
-
-        ValidateChatMetricTags(measurement, response, RequestModel, Host, Port);
-    }
-
-    private void ValidateUsage(TestMeterListener listener, ChatCompletion response, int inputTokens, int outputTokens)
-    {
-        var usage = listener.GetInstrument("gen_ai.client.token.usage");
-        Assert.IsNotNull(usage);
-        Assert.IsInstanceOf<Histogram<long>>(usage);
-
-        var measurements = listener.GetMeasurements("gen_ai.client.token.usage");
-        Assert.IsNotNull(measurements);
-        Assert.AreEqual(2, measurements.Count);
-
-        foreach (var measurement in measurements)
-        {
-            Assert.IsInstanceOf<long>(measurement.value);
-            ValidateChatMetricTags(measurement, response, RequestModel, Host, Port);
-        }
-
-        Assert.True(measurements[0].tags.TryGetValue("gen_ai.token.type", out var type));
-        Assert.IsInstanceOf<string>(type);
-
-        TestMeasurement input = (type is "input") ? measurements[0] : measurements[1];
-        TestMeasurement output = (type is "input") ? measurements[1] : measurements[0];
-
-        Assert.AreEqual(inputTokens, input.value);
-        Assert.AreEqual(outputTokens, output.value);
-    }
-
     private static ChatCompletion CreateChatCompletion(int promptTokens = PromptTokens, int completionTokens = CompletionTokens)
     {
         var completion = BinaryData.FromString(
@@ -292,5 +364,46 @@ public class ChatTelemetryTests
             """);
 
         return ModelReaderWriter.Read<ChatCompletion>(completion);
+    }
+
+    private static StreamingChatCompletionUpdate CreateStreamingUpdate(string finishReason = null,
+        string model = null,
+        int? promptTokens = null,
+        int? completionTokens = null)
+    {
+        var usage = promptTokens == null ? "null" : $$"""
+            {
+                "completion_tokens": {{completionTokens}},
+                "prompt_tokens": {{promptTokens}},
+                "total_tokens": 42
+            }
+            """;
+
+        finishReason = finishReason == null ? "null" : $"\"{finishReason}\"";
+        model = model == null ? "null" : $"\"{model}\"";
+
+        var completion = BinaryData.FromString(
+            $$"""
+            {
+              "id": "{{CompletionId}}",
+              "created": 1719621282,
+              "choices": [
+                {
+                  "message": {
+                    "role": "assistant",
+                    "content": null
+                  },
+                  "logprobs": null,
+                  "index": 0,
+                  "finish_reason": {{finishReason}}
+                }
+              ],
+              "model": {{model}},
+              "system_fingerprint": "fp_7ec89fabc6",
+              "usage": {{usage}}
+            }
+            """);
+
+        return ModelReaderWriter.Read<StreamingChatCompletionUpdate>(completion);
     }
 }

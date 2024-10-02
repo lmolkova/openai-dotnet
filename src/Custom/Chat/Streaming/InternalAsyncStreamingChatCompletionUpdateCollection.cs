@@ -1,3 +1,4 @@
+using OpenAI.Telemetry;
 using System;
 using System.ClientModel;
 using System.ClientModel.Primitives;
@@ -18,15 +19,18 @@ internal class InternalAsyncStreamingChatCompletionUpdateCollection : AsyncColle
 {
     private readonly Func<Task<ClientResult>> _sendRequestAsync;
     private readonly CancellationToken _cancellationToken;
+    private readonly OpenTelemetryScope _otelScope;
 
     public InternalAsyncStreamingChatCompletionUpdateCollection(
         Func<Task<ClientResult>> sendRequestAsync,
+        OpenTelemetryScope otelScope,
         CancellationToken cancellationToken)
     {
         Argument.AssertNotNull(sendRequestAsync, nameof(sendRequestAsync));
 
         _sendRequestAsync = sendRequestAsync;
         _cancellationToken = cancellationToken;
+        _otelScope = otelScope;
     }
 
     public override ContinuationToken? GetContinuationToken(ClientResult page)
@@ -43,7 +47,7 @@ internal class InternalAsyncStreamingChatCompletionUpdateCollection : AsyncColle
 
     protected async override IAsyncEnumerable<StreamingChatCompletionUpdate> GetValuesFromPageAsync(ClientResult page)
     {
-        await using IAsyncEnumerator<StreamingChatCompletionUpdate> enumerator = new AsyncStreamingChatUpdateEnumerator(page, _cancellationToken);
+        await using IAsyncEnumerator<StreamingChatCompletionUpdate> enumerator = new AsyncStreamingChatUpdateEnumerator(page, _otelScope, _cancellationToken);
         while (await enumerator.MoveNextAsync().ConfigureAwait(false))
         {
             yield return enumerator.Current;
@@ -56,6 +60,7 @@ internal class InternalAsyncStreamingChatCompletionUpdateCollection : AsyncColle
 
         private readonly CancellationToken _cancellationToken;
         private readonly PipelineResponse _response;
+        private readonly OpenTelemetryScope? _otelScope;
 
         // These enumerators represent what is effectively a doubly-nested
         // loop over the outer event collection and the inner update collection,
@@ -70,12 +75,14 @@ internal class InternalAsyncStreamingChatCompletionUpdateCollection : AsyncColle
         private StreamingChatCompletionUpdate? _current;
         private bool _started;
 
-        public AsyncStreamingChatUpdateEnumerator(ClientResult page, CancellationToken cancellationToken)
+        public AsyncStreamingChatUpdateEnumerator(ClientResult page, OpenTelemetryScope? otelScope, CancellationToken cancellationToken)
         {
             Argument.AssertNotNull(page, nameof(page));
 
             _response = page.GetRawResponse();
+            _otelScope = otelScope;
             _cancellationToken = cancellationToken;
+            _cancellationToken.Register(() => _otelScope?.RecordCancellation());
         }
 
         StreamingChatCompletionUpdate IAsyncEnumerator<StreamingChatCompletionUpdate>.Current
@@ -95,26 +102,36 @@ internal class InternalAsyncStreamingChatCompletionUpdateCollection : AsyncColle
             if (_updates is not null && _updates.MoveNext())
             {
                 _current = _updates.Current;
+                _otelScope?.RecordStreamingUpdate(_current);
                 return true;
             }
 
-            if (await _events.MoveNextAsync().ConfigureAwait(false))
+            try
             {
-                if (_events.Current.Data.AsSpan().SequenceEqual(TerminalData))
+                if (await _events.MoveNextAsync().ConfigureAwait(false))
                 {
-                    _current = default;
-                    return false;
-                }
+                    if (_events.Current.Data.AsSpan().SequenceEqual(TerminalData))
+                    {
+                        _current = default;
+                        return false;
+                    }
 
-                using JsonDocument doc = JsonDocument.Parse(_events.Current.Data);
-                List<StreamingChatCompletionUpdate> updates = [StreamingChatCompletionUpdate.DeserializeStreamingChatCompletionUpdate(doc.RootElement)];
-                _updates = updates.GetEnumerator();
+                    using JsonDocument doc = JsonDocument.Parse(_events.Current.Data);
+                    List<StreamingChatCompletionUpdate> updates = [StreamingChatCompletionUpdate.DeserializeStreamingChatCompletionUpdate(doc.RootElement)];
+                    _updates = updates.GetEnumerator();
 
-                if (_updates.MoveNext())
-                {
-                    _current = _updates.Current;
-                    return true;
+                    if (_updates.MoveNext())
+                    {
+                        _current = _updates.Current;
+                        _otelScope?.RecordStreamingUpdate(_current);
+                        return true;
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                _otelScope?.RecordException(ex);
+                throw;
             }
 
             _current = default;
@@ -141,6 +158,7 @@ internal class InternalAsyncStreamingChatCompletionUpdateCollection : AsyncColle
 
         private async ValueTask DisposeAsyncCore()
         {
+            _otelScope?.Dispose();
             if (_events is not null)
             {
                 await _events.DisposeAsync().ConfigureAwait(false);

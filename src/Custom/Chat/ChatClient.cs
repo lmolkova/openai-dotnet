@@ -192,12 +192,23 @@ public partial class ChatClient
 
         options ??= new();
         CreateChatCompletionOptions(messages, ref options, stream: true);
+        
+        OpenTelemetryScope scope = _telemetry.StartChatScope(options);
 
-        using BinaryContent content = options.ToBinaryContent();
+        try
+        {
+            using BinaryContent content = options.ToBinaryContent();
 
-        async Task<ClientResult> sendRequestAsync() =>
-            await CompleteChatAsync(content, cancellationToken.ToRequestOptions(streaming: true)).ConfigureAwait(false);
-        return new InternalAsyncStreamingChatCompletionUpdateCollection(sendRequestAsync, cancellationToken);
+            async Task<ClientResult> sendRequestAsync() =>
+                await CompleteChatAsync(content, cancellationToken.ToRequestOptions(streaming: true)).ConfigureAwait(false);
+            return new InternalAsyncStreamingChatCompletionUpdateCollection(sendRequestAsync, scope, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            scope?.RecordException(ex);
+            scope?.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -219,10 +230,20 @@ public partial class ChatClient
 
         options ??= new();
         CreateChatCompletionOptions(messages, ref options, stream: true);
+        OpenTelemetryScope scope = _telemetry.StartChatScope(options);
 
-        using BinaryContent content = options.ToBinaryContent();
-        ClientResult sendRequest() => CompleteChat(content, cancellationToken.ToRequestOptions(streaming: true));
-        return new InternalStreamingChatCompletionUpdateCollection(sendRequest, cancellationToken);
+        try
+        {
+            using BinaryContent content = options.ToBinaryContent();
+            ClientResult sendRequest() => CompleteChat(content, cancellationToken.ToRequestOptions(streaming: true));
+            return new InternalStreamingChatCompletionUpdateCollection(sendRequest, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            scope?.RecordException(ex);
+            scope?.Dispose();
+            throw;
+        }
     }
 
     /// <summary>

@@ -1,5 +1,4 @@
 ﻿using NUnit.Framework;
-using OpenAI.Chat;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -61,7 +60,7 @@ internal class TestMeterListener : IDisposable
         _listener.Dispose();
     }
 
-    public static void ValidateChatMetricTags(TestMeasurement measurement, ChatCompletion response, string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
+    private static void ValidateChatMetricTags(TestMeasurement measurement, TestResponseInfo response, string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
     {
         Assert.AreEqual("openai", measurement.tags["gen_ai.system"]);
         Assert.AreEqual("chat", measurement.tags["gen_ai.operation.name"]);
@@ -69,17 +68,72 @@ internal class TestMeterListener : IDisposable
         Assert.AreEqual(requestModel, measurement.tags["gen_ai.request.model"]);
         Assert.AreEqual(port, measurement.tags["server.port"]);
 
-        if (response != null)
+        if (response?.Model != null)
         {
             Assert.AreEqual(response.Model, measurement.tags["gen_ai.response.model"]);
+        }
+        else
+        {
+            Assert.False(measurement.tags.ContainsKey("gen_ai.response.model"));
+        }
+
+        if (response?.ErrorType != null)
+        {
+            Assert.AreEqual(response.ErrorType, measurement.tags["error.type"]);
+        }
+        else
+        {
             Assert.False(measurement.tags.ContainsKey("error.type"));
         }
     }
 
-    public static void ValidateChatMetricTags(TestMeasurement measurement, Exception ex, string requestModel = "gpt-4o-mini", string host = "api.openai.com", int port = 443)
+    public TestMeasurement ValidateDuration(TestResponseInfo response, string requestModel, string host, int port)
     {
-        ValidateChatMetricTags(measurement, (ChatCompletion)null, requestModel, host, port);
-        Assert.True(measurement.tags.ContainsKey("error.type"));
-        Assert.AreEqual(ex.GetType().FullName, measurement.tags["error.type"]);
+        var duration = GetInstrument("gen_ai.client.operation.duration");
+        Assert.IsNotNull(duration);
+        Assert.IsInstanceOf<Histogram<double>>(duration);
+
+        var measurements = GetMeasurements("gen_ai.client.operation.duration");
+        Assert.IsNotNull(measurements);
+        Assert.AreEqual(1, measurements.Count);
+
+        var measurement = measurements[0];
+        Assert.IsInstanceOf<double>(measurement.value);
+
+        ValidateChatMetricTags(measurement, response, requestModel, host, port);
+        return measurement;
+    }
+
+    public void ValidateUsage(TestResponseInfo response, string requestModel, string host, int port)
+    {
+        var usage = GetInstrument("gen_ai.client.token.usage");
+
+        if (response.PromptTokens == null)
+        {
+            Assert.IsNull(usage);
+            return;
+        }
+
+        Assert.IsNotNull(usage);
+        Assert.IsInstanceOf<Histogram<long>>(usage);
+
+        var measurements = GetMeasurements("gen_ai.client.token.usage");
+        Assert.IsNotNull(measurements);
+        Assert.AreEqual(2, measurements.Count);
+
+        foreach (var measurement in measurements)
+        {
+            Assert.IsInstanceOf<long>(measurement.value);
+            ValidateChatMetricTags(measurement, response, requestModel, host, port);
+        }
+
+        Assert.True(measurements[0].tags.TryGetValue("gen_ai.token.type", out var type));
+        Assert.IsInstanceOf<string>(type);
+
+        TestMeasurement input = (type is "input") ? measurements[0] : measurements[1];
+        TestMeasurement output = (type is "input") ? measurements[1] : measurements[0];
+
+        Assert.AreEqual(response?.PromptTokens, input.value);
+        Assert.AreEqual(response?.CompletionTokens, output.value);
     }
 }
